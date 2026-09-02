@@ -2,7 +2,7 @@
 
 import React, { memo } from "react";
 import Webcam from "react-webcam";
-import { Eye, Zap } from "lucide-react";
+import { Zap, ShieldCheck } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 const videoConstraints = {
@@ -13,16 +13,10 @@ const videoConstraints = {
 
 let _offscreenCanvas = null;
 
-/**
- * High-performance frame extractor.
- * Scales the video frame to a lightweight 256px JPEG (~5KB) directly on an offscreen canvas.
- * This avoids sending heavy 640x480 images over HTTP and keeps latency under 20ms.
- */
 export function getOptimizedFrame(webcamRef) {
   if (!webcamRef || !webcamRef.current) return null;
   const video = webcamRef.current.video;
   if (!video || video.readyState < 2 || !video.videoWidth) {
-    // Fallback to getScreenshot if video element not directly ready
     return webcamRef.current.getScreenshot ? webcamRef.current.getScreenshot() : null;
   }
 
@@ -50,15 +44,17 @@ const WebcamFeed = memo(function WebcamFeed({
   isDetecting,
   lastPrediction,
   latencyMs,
+  confidence,
 }) {
   return (
-    <div className="relative w-full max-w-lg mx-auto rounded-2xl overflow-hidden glass-panel border border-slate-700/60 shadow-2xl group">
-      {/* Top Status Bar overlay */}
-      <div className="absolute top-3 left-3 right-3 z-20 flex items-center justify-between pointer-events-none">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-950/70 backdrop-blur-md border border-white/10 text-xs font-medium">
+    <div className="relative w-full max-w-lg mx-auto rounded-3xl overflow-hidden glass-card border border-slate-700/60 shadow-2xl group transition-all duration-300">
+      {/* Top Status HUD Header */}
+      <div className="absolute top-3.5 left-3.5 right-3.5 z-20 flex items-center justify-between pointer-events-none">
+        {/* Status Pill */}
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-950/80 backdrop-blur-md border border-white/10 text-xs font-medium tracking-wide">
           <span
-            className={`w-2 h-2 rounded-full ${
-              isDetecting ? "bg-emerald-400 animate-ping" : "bg-amber-400"
+            className={`w-2 h-2 rounded-full transition-all duration-300 ${
+              isDetecting ? "bg-emerald-400 animate-pulse shadow-[0_0_8px_#34d399]" : "bg-amber-400"
             }`}
           />
           <span className={isDetecting ? "text-emerald-300" : "text-amber-300"}>
@@ -66,15 +62,16 @@ const WebcamFeed = memo(function WebcamFeed({
           </span>
         </div>
 
+        {/* Real-time Latency Badge */}
         {isDetecting && latencyMs !== null && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-950/70 backdrop-blur-md border border-white/10 text-[11px] text-slate-300 font-mono">
-            <Zap className="w-3 h-3 text-sky-400" />
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-950/80 backdrop-blur-md border border-white/10 text-[11px] text-slate-300 font-mono">
+            <Zap className="w-3.5 h-3.5 text-sky-400 animate-pulse" />
             <span>{latencyMs}ms</span>
           </div>
         )}
       </div>
 
-      {/* Camera Viewport */}
+      {/* Video Viewport Container */}
       <div className="relative aspect-[4/3] w-full bg-slate-950 flex items-center justify-center overflow-hidden">
         <Webcam
           ref={webcamRef}
@@ -86,11 +83,18 @@ const WebcamFeed = memo(function WebcamFeed({
           className="w-full h-full object-cover"
         />
 
-        {/* Scan line overlay when detecting */}
+        {/* HUD Targeting Corner Brackets */}
+        <div className="absolute inset-4 pointer-events-none border border-white/5 rounded-2xl">
+          <div className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-sky-400/60 rounded-tl-lg" />
+          <div className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-sky-400/60 rounded-tr-lg" />
+          <div className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-sky-400/60 rounded-bl-lg" />
+          <div className="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-sky-400/60 rounded-br-lg" />
+        </div>
+
+        {/* Active Laser Scan Line */}
         {isDetecting && (
           <div className="absolute inset-0 pointer-events-none overflow-hidden">
-            <div className="w-full h-24 bg-gradient-to-b from-transparent via-sky-500/15 to-transparent animate-scan-line" />
-            <div className="absolute inset-0 border border-sky-500/20 rounded-2xl pointer-events-none" />
+            <div className="w-full h-20 bg-gradient-to-b from-transparent via-sky-400/20 to-transparent animate-scan" />
           </div>
         )}
 
@@ -98,15 +102,21 @@ const WebcamFeed = memo(function WebcamFeed({
         <AnimatePresence>
           {isDetecting && lastPrediction && (
             <motion.div
-              initial={{ scale: 0.7, opacity: 0, y: 10 }}
+              initial={{ scale: 0.6, opacity: 0, y: 15 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.7, opacity: 0 }}
-              className="absolute bottom-4 right-4 z-20 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-sky-950/80 backdrop-blur-md border border-sky-400/30 text-sky-200 shadow-lg font-mono text-sm"
+              exit={{ scale: 0.6, opacity: 0, y: 10 }}
+              transition={{ type: "spring", stiffness: 400, damping: 25 }}
+              className="absolute bottom-4 right-4 z-20 flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-slate-900/90 backdrop-blur-xl border border-sky-400/40 text-sky-100 shadow-[0_10px_30px_rgba(0,0,0,0.8)] font-mono text-sm"
             >
-              <Eye className="w-4 h-4 text-sky-400" />
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
               <span>
-                Detected: <strong className="text-white text-base">{lastPrediction}</strong>
+                Sign: <strong className="text-white text-lg font-bold ml-1">{lastPrediction}</strong>
               </span>
+              {confidence && (
+                <span className="text-xs text-sky-300/70 border-l border-white/10 pl-2">
+                  {Math.round(confidence * 100)}%
+                </span>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

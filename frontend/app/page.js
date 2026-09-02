@@ -7,47 +7,39 @@ import WebcamFeed, { getOptimizedFrame } from "@/components/WebcamFeed";
 import Controls from "@/components/Controls";
 import OutputDisplay from "@/components/OutputDisplay";
 
-// API endpoints with automatic fallback
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/predict";
 const API_FALLBACK_URL = "http://localhost:5050/predict";
 
-// Precise interval between inference requests
 const INFERENCE_INTERVAL_MS = 700;
-// Request timeout guard (aborts in-flight request if backend exceeds 1200ms)
 const REQUEST_TIMEOUT_MS = 1200;
 
 export default function Home() {
   const [isDetecting, setIsDetecting] = useState(false);
   const [detectedText, setDetectedText] = useState("");
   const [lastPrediction, setLastPrediction] = useState(null);
+  const [confidence, setConfidence] = useState(null);
   const [latencyMs, setLatencyMs] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
-  // Performance & Concurrency Refs
   const webcamRef = useRef(null);
-  const requestLockRef = useRef(false); // Strict request lock ensuring ONE request at a time
+  const requestLockRef = useRef(false);
   const loopTimeoutRef = useRef(null);
   const abortControllerRef = useRef(null);
   const isMountedRef = useRef(true);
   const lastCharRef = useRef(null);
   const consecutiveCountRef = useRef(0);
 
-  // Send a single frame with strict locking and timeout guard
   const executeSingleInference = useCallback(async () => {
-    // 1. Request Lock Guard: Drop cycle immediately if another request is in flight
     if (requestLockRef.current) return;
     if (!webcamRef.current) return;
 
-    // 2. Extract downscaled & compressed frame (~4-6KB)
     const imageSrc = getOptimizedFrame(webcamRef);
     if (!imageSrc) return;
 
-    // 3. Acquire Lock
     requestLockRef.current = true;
     setIsProcessing(true);
 
-    // Create abort controller for network timeout
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
     const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
@@ -65,7 +57,6 @@ export default function Home() {
         });
       } catch (primaryErr) {
         if (abortController.signal.aborted) throw primaryErr;
-        // Fallback to secondary port if port 5000 was busy
         response = await fetch(API_FALLBACK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -85,12 +76,14 @@ export default function Home() {
 
       if (!isMountedRef.current) return;
 
-      if (data.success && data.landmarks_detected && data.prediction) {
+      const isHandDetected = data.detected || data.landmarks_detected;
+
+      if (data.success && isHandDetected && data.prediction) {
         const char = data.prediction;
         setLastPrediction(char);
+        if (data.confidence !== undefined) setConfidence(data.confidence);
         if (data.latency_ms !== undefined) setLatencyMs(data.latency_ms);
 
-        // Smart text accumulation: 3 consecutive detections (~2.1s hold) appends repeat char
         if (char === lastCharRef.current) {
           consecutiveCountRef.current += 1;
           if (consecutiveCountRef.current === 3) {
@@ -102,10 +95,11 @@ export default function Home() {
           consecutiveCountRef.current = 1;
           setDetectedText((prev) => prev + char);
         }
-      } else if (!data.landmarks_detected) {
+      } else if (!isHandDetected) {
         lastCharRef.current = null;
         consecutiveCountRef.current = 0;
         setLastPrediction(null);
+        setConfidence(null);
         if (data.latency_ms !== undefined) setLatencyMs(data.latency_ms);
       }
     } catch (err) {
@@ -115,7 +109,6 @@ export default function Home() {
     } finally {
       clearTimeout(timeoutId);
       abortControllerRef.current = null;
-      // 4. Release Lock
       requestLockRef.current = false;
       if (isMountedRef.current) {
         setIsProcessing(false);
@@ -123,10 +116,8 @@ export default function Home() {
     }
   }, []);
 
-  // Self-scheduling loop: guarantees exactly 700ms gap and ZERO overlapping requests
   useEffect(() => {
     isMountedRef.current = true;
-
     let isRunning = isDetecting;
 
     const scheduleNextTick = () => {
@@ -141,7 +132,6 @@ export default function Home() {
     };
 
     if (isDetecting) {
-      // Immediate first frame capture, then schedule chained ticks
       executeSingleInference().then(() => {
         if (isRunning) scheduleNextTick();
       });
@@ -157,6 +147,7 @@ export default function Home() {
       requestLockRef.current = false;
       setIsProcessing(false);
       setLastPrediction(null);
+      setConfidence(null);
     }
 
     return () => {
@@ -172,11 +163,17 @@ export default function Home() {
     };
   }, []);
 
-  // Handlers
   const handleStart = () => setIsDetecting(true);
   const handleStop = () => setIsDetecting(false);
+  
   const handleClear = () => {
     setDetectedText("");
+    lastCharRef.current = null;
+    consecutiveCountRef.current = 0;
+  };
+
+  const handleAddSpace = () => {
+    setDetectedText((prev) => (prev.endsWith(" ") ? prev : prev + " "));
     lastCharRef.current = null;
     consecutiveCountRef.current = 0;
   };
@@ -203,35 +200,32 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen w-full flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8">
-      {/* Background ambient lighting */}
+    <main className="min-h-screen w-full flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8 relative">
       <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-sky-500/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 left-1/3 w-80 h-80 bg-violet-500/10 rounded-full blur-3xl" />
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-sky-500/10 rounded-full blur-[120px]" />
+        <div className="absolute bottom-1/4 left-1/3 w-[450px] h-[450px] bg-violet-500/10 rounded-full blur-[120px]" />
       </div>
 
-      <div className="relative z-10 w-full max-w-xl flex flex-col items-center space-y-5">
-        {/* Header */}
+      <div className="relative z-10 w-full max-w-xl flex flex-col items-center space-y-4 sm:space-y-5">
         <motion.header
-          initial={{ opacity: 0, y: -15 }}
+          initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="text-center space-y-1.5"
+          className="text-center space-y-2"
         >
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-sky-400 text-xs font-semibold tracking-wider uppercase shadow-inner">
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/80 border border-slate-700/60 text-sky-400 text-xs font-semibold tracking-wider uppercase shadow-inner">
             <Hand className="w-3.5 h-3.5" />
             <span>AI Sign Recognition</span>
           </div>
 
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white">
             Sign Language Translator
           </h1>
-          <p className="text-xs sm:text-sm text-slate-400 max-w-sm mx-auto">
-            Real-time hand gesture detection with low-latency MediaPipe vision
+          <p className="text-xs sm:text-sm text-slate-400 max-w-md mx-auto">
+            Real-time hand gesture translation powered by MediaPipe AI & Neural Speech
           </p>
         </motion.header>
 
-        {/* 1. Webcam Viewport */}
         <motion.section
           initial={{ opacity: 0, scale: 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -243,11 +237,11 @@ export default function Home() {
             isDetecting={isDetecting}
             isProcessing={isProcessing}
             lastPrediction={lastPrediction}
+            confidence={confidence}
             latencyMs={latencyMs}
           />
         </motion.section>
 
-        {/* 2. Controls */}
         <motion.section
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -260,12 +254,12 @@ export default function Home() {
             onStop={handleStop}
             onClear={handleClear}
             onSpeak={handleSpeak}
+            onAddSpace={handleAddSpace}
             hasText={detectedText.length > 0}
             isSpeaking={isSpeaking}
           />
         </motion.section>
 
-        {/* 3. Output Display */}
         <motion.section
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
