@@ -3,16 +3,24 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { Hand, Sparkles, Activity } from "lucide-react";
-import WebcamFeed, { getOptimizedFrame } from "@/components/WebcamFeed";
+import WebcamFeed from "@/components/WebcamFeed";
+import { getGestureFeatures } from "@/components/handLandmarker";
 import Controls from "@/components/Controls";
 import OutputDisplay from "@/components/OutputDisplay";
 
-// API endpoints (supports production environment variable and local fallbacks)
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/predict";
-const API_FALLBACK_URL = "http://localhost:5050/predict";
+// API base (override with NEXT_PUBLIC_API_URL on Vercel).
+// Live backend is FastAPI: POST {features:[63 numbers]} to /api/predict
+// -> {gesture, confidence, hand_detected}.
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_URL || "https://handgesture-backend.onrender.com"
+).replace(/\/$/, "");
+const PREDICT_URL = API_BASE.endsWith("/predict")
+  ? API_BASE.replace(/\/predict$/, "/api/predict")
+  : `${API_BASE}/api/predict`;
 
 const INFERENCE_INTERVAL_MS = 700;
-const REQUEST_TIMEOUT_MS = 1200;
+// Generous timeout: Render free tier cold-starts can take 20s+ on first hit.
+const REQUEST_TIMEOUT_MS = 30000;
 
 export default function Home() {
   const [isDetecting, setIsDetecting] = useState(false);
@@ -38,9 +46,9 @@ export default function Home() {
     if (requestLockRef.current) return;
     if (!webcamRef.current) return;
 
-    // Extract downscaled & compressed 256px JPEG frame (~4KB)
-    const imageSrc = getOptimizedFrame(webcamRef);
-    if (!imageSrc) return;
+    // Browser-side MediaPipe: video frame -> 21 landmarks -> 63-D features.
+    // Null = no hand in frame (skip the API call, clear prediction below).
+    const features = await getGestureFeatures(webcamRef);
 
     // Acquire request lock
     requestLockRef.current = true;
@@ -51,26 +59,21 @@ export default function Home() {
     const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      let response;
-      const requestPayload = JSON.stringify({ image: imageSrc });
-
-      try {
-        response = await fetch(API_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: requestPayload,
-          signal: abortController.signal,
-        });
-      } catch (primaryErr) {
-        if (abortController.signal.aborted) throw primaryErr;
-        // Fallback to secondary port if port 5000 is occupied
-        response = await fetch(API_FALLBACK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: requestPayload,
-          signal: abortController.signal,
-        });
+      if (!features) {
+        lastCharRef.current = null;
+        consecutiveCountRef.current = 0;
+        setLastPrediction(null);
+        setConfidence(null);
+        return;
       }
+
+      const fetchStartedAt = performance.now();
+      const response = await fetch(PREDICT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ features }),
+        signal: abortController.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -83,32 +86,27 @@ export default function Home() {
 
       if (!isMountedRef.current) return;
 
-      const isHandDetected = data.detected || data.landmarks_detected;
+      // Client-measured round-trip keeps the latency badge live
+      // (FastAPI backend does not return server-side latency).
+      setLatencyMs(Math.round(performance.now() - fetchStartedAt));
 
-      if (data.success && isHandDetected && data.prediction) {
-        const char = data.prediction;
-        setLastPrediction(char);
+      if (data.hand_detected && data.gesture) {
+        const label = data.gesture;
+        setLastPrediction(label);
         if (data.confidence !== undefined) setConfidence(data.confidence);
-        if (data.latency_ms !== undefined) setLatencyMs(data.latency_ms);
 
-        // Smart text accumulation: 3 consecutive detections (~2.1s hold) appends repeat char
-        if (char === lastCharRef.current) {
-          consecutiveCountRef.current += 1;
-          if (consecutiveCountRef.current === 3) {
-            setDetectedText((prev) => prev + char);
-            consecutiveCountRef.current = 0;
-          }
-        } else {
-          lastCharRef.current = char;
-          consecutiveCountRef.current = 1;
-          setDetectedText((prev) => prev + char);
+        // Word-level accumulation: append only on gesture change,
+        // so holding a pose never spams duplicates.
+        if (label !== lastCharRef.current) {
+          lastCharRef.current = label;
+          setDetectedText((prev) => (prev ? `${prev} ${label}` : label));
         }
-      } else if (!isHandDetected) {
+        consecutiveCountRef.current = 0;
+      } else {
         lastCharRef.current = null;
         consecutiveCountRef.current = 0;
         setLastPrediction(null);
         setConfidence(null);
-        if (data.latency_ms !== undefined) setLatencyMs(data.latency_ms);
       }
     } catch (err) {
       if (err.name !== "AbortError") {
